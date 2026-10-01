@@ -27,7 +27,7 @@ Assuming Qwen3-8B has ~80 layers:
 - 80% insensitive layers @ 2-bit
 - Baseline 4-bit uniform: ~4 GB
 - Proposed mixed precision: ~2.8 GB
-- **Savings:** ~30% reduction vs. uniform 4-bit, with negligible perplexity cost.
+- **Savings (estimate, not yet measured):** ~30% smaller than uniform 4-bit.
 
 ## Planned Benchmark Methodology
 - **Dataset:** WikiText-2 (validation split).
@@ -62,5 +62,7 @@ python quantize.py --model llama2-7b --calib calib.json --output quantized/model
 
 
 ## Results
+
+**Measured status:** Measured on Qwen3-8B (3 short prompts): mixed precision 32.50 perplexity vs FP16 33.48 vs uniform 4-bit 35.15. Memory use has not been measured yet, and 3 prompts is an early signal, not a benchmark.
 
 See [RESULTS.md](RESULTS.md)

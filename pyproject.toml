@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "activation-aware-quant"
 version = "0.1.0"
-description = "Activation-aware mixed-precision quantization"
+description = "Activation-aware weight scaling for low-bit LLM quantization"
 requires-python = ">=3.10"
 dependencies = ["torch>=2.0.0"]
 

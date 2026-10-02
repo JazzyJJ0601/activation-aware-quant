@@ -1,0 +1,37 @@
+{
+  "setup": {
+    "model": "Qwen3-8B",
+    "group": 128,
+    "eval": "WikiText-2 test, 40x512 tokens",
+    "calib": "WikiText-2 train, 8x512 tokens",
+    "linears": 252
+  },
+  "fp16": {
+    "ppl": 12.0346,
+    "measured_weights_gb": 16.38
+  },
+  "rtn_4bit": {
+    "ppl": 12.9164,
+    "packed_gb": 6.18,
+    "seconds": 10.5
+  },
+  "activation_aware_4bit": {
+    "ppl": 12.5055,
+    "packed_gb": 6.18,
+    "seconds": 22.7,
+    "mean_alpha": 0.348,
+    "layers_alpha0": 0
+  },
+  "rtn_3bit": {
+    "ppl": 17.4711,
+    "packed_gb": 5.31,
+    "seconds": 10.4
+  },
+  "activation_aware_3bit": {
+    "ppl": 14.4764,
+    "packed_gb": 5.31,
+    "seconds": 22.8,
+    "mean_alpha": 0.355,
+    "layers_alpha0": 0
+  }
+}

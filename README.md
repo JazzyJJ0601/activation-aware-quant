@@ -1,68 +1,58 @@
 # Activation-Aware Quantization
 
-This repository implements activation-aware mixed-precision quantization for large language models.
+Low-bit weight quantisation that protects the input channels carrying large activations.
+Before group-wise rounding, each input channel's weights are scaled up by `s = rms(x)^α`
+and the scale is divided back out afterwards, so salient channels get finer steps at no
+extra storage. α is searched per layer.
 
-## What It Is
-Activation-aware quantization dynamically assigns different bit-widths to layers based on their activation statistics, rather than treating all weights uniformly.
+Measured on **Qwen3-8B**, same size as plain round-to-nearest (RTN):
 
-## Innovation
-Traditional quantization methods rely on weight gradients or uniform bit-width assignment. Our approach uses activation statistics (outliers, variance, distribution) to identify which layers are sensitive to quantization and which can be aggressively compressed.
+| Bits | Packed size | Plain RTN | Activation-aware | bf16 |
+|---:|---:|---:|---:|---:|
+| 4 | 6.18 GB | 12.92 | **12.51** | 12.03 |
+| 3 | 5.31 GB | 17.47 | **14.48** | 12.03 |
 
-## How It Works
-1. **Calibrate:** Run a forward pass on a small calibration dataset to collect activation statistics per layer.
-2. **Assign Bit-Widths:** Use activation variance and outlier counts to assign optimal bit-widths (e.g., 4-bit, 6-bit, 8-bit) per layer.
-3. **Apply Simulated Quantization:** Simulate quantization effects during training or inference to validate performance before deployment.
+At 4 bits it removes 47% of RTN's perplexity loss; at 3 bits, 55%. The bf16 weights measure
+16.38 GB, so 4-bit packing is 2.65× smaller and 3-bit 3.08×.
 
-## Design Methodology (from repo9 design phase)
-- **Activation Profiling:** Run a small calibration set (128 samples from WikiText-2) through the model. Record per-layer activation statistics (mean absolute value, variance, and outlier counts).
-- **Sensitivity Scoring:** Compute a sensitivity score per layer based on activation stability. High variance or large magnitude activations indicate importance.
-- **Bit-Width Assignment:**
-  - **High Sensitivity:** FP16 or 4-bit to preserve gradient flow.
-  - **Low Sensitivity:** 2-bit quantization for maximum compression.
-- **Reconstruction Loss:** Fine-tune quantization parameters using mean squared error between quantized and original activations.
+## Method
 
-## Expected Memory Savings
-Assuming Qwen3-8B has ~80 layers:
-- 20% sensitive layers @ 4-bit
-- 80% insensitive layers @ 2-bit
-- Baseline 4-bit uniform: ~4 GB
-- Proposed mixed precision: ~2.8 GB
-- **Savings (estimate, not yet measured):** ~30% smaller than uniform 4-bit.
+1. Run 8 × 512 tokens of WikiText-2 *train* and record E[x²] per input channel for all 252
+   decoder linears.
+2. For each layer and each α in {0, 0.1, …, 1}: scale columns by `s = rms(x)^α` (normalised so
+   the geometric mean of max and min is 1), quantise with group-128 asymmetric RTN, unscale.
+3. Keep the α with the lowest activation-weighted error Σ (ΔW)² · E[x²], a diagonal-Hessian proxy
+   for output error. α = 0 is plain RTN, so the search can always fall back to it.
 
-## Planned Benchmark Methodology
-- **Dataset:** WikiText-2 (validation split).
-- **Metric:** Perplexity (PPL) and inference latency.
-- **Baselines:**
-  1. Full precision (FP16).
-  2. Uniform 4-bit (baseline).
-  3. Uniform 2-bit (compression extreme).
-- **Evaluation:**
-  1. Measure PPL for all configurations.
-  2. Compare parameter memory footprint.
-  3. Plot PPL vs. model size to identify optimal compression frontier.
+This is the core of AWQ (Lin et al., 2024) with a proxy-based α search per layer instead of
+measuring block outputs. The scales fold into the preceding op (or into the dequant scale), so
+the stored model has the same format and size as RTN.
 
-## Expected Benefits
-- **Lower Perplexity:** Maintains accuracy at lower bit-widths compared to uniform quantization.
-- **Memory Efficiency:** Reduces model size by compressing less sensitive layers.
-- **Hardware Friendly:** Uses integer arithmetic for compressed layers.
+The search picked a mean α of 0.35 and never chose α = 0: every one of the 252 layers preferred
+some scaling.
 
-## Usage Example
-```python
-from quantization import ActivationAwareQuantizer
+## Honest limits
 
-quantizer = ActivationAwareQuantizer(calibration_data=dataloader)
-quantizer.calibrate(model)
-quantizer.apply_quantization(model)
-```
+- Fake quantisation (quantise, then dequantise to bf16). Perplexity is exact for the format;
+  packed size is computed (bits + fp16 scale and zero-point per 128 weights; embeddings, lm_head
+  and norms stay 16-bit). No packed kernel, so no speed numbers.
+- One model, WikiText-2 only, 40 × 512 evaluation tokens.
+- Not compared with the official AWQ code or GPTQ; the comparison is against plain RTN in the
+  same format.
+- An earlier version claimed "mixed precision 32.50 beats FP16 33.48" on 3 short prompts. That
+  came from a broken quantiser and too little text, and is withdrawn.
 
-Or via CLI:
+## Reproduce
+
+Needs a CUDA GPU with ~20 GB and a local Qwen3-8B checkpoint (path in `results/qcommon.py`).
+
 ```bash
-python quantize.py --model llama2-7b --calib calib.json --output quantized/model
+python results/run_real.py      # a few minutes on an RTX 3090 Ti, writes results/real.json
+pytest -q tests
 ```
 
+Details: [RESULTS.md](RESULTS.md). Raw numbers: [`results/real.json`](results/real.json).
 
-## Results
+## License
 
-**Measured status:** Measured on Qwen3-8B (3 short prompts): mixed precision 32.50 perplexity vs FP16 33.48 vs uniform 4-bit 35.15. Memory use has not been measured yet, and 3 prompts is an early signal, not a benchmark.
-
-See [RESULTS.md](RESULTS.md)
+MIT

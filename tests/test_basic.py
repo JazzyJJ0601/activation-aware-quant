@@ -1,94 +1,45 @@
-"""Basic smoke tests for activation-aware quantization."""
+"""Tests for the quantiser and the activation-aware search used in results/run_real.py."""
+import sys
+from pathlib import Path
 
-import pytest
 import torch
-import torch.nn as nn
-from src.activation_aware_quant import ActivationAwareQuantizer
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "results"))
+from qcommon import rtn, weighted_err  # noqa: E402
+from run_real import aware  # noqa: E402
 
 
-def test_quantizer_creation():
-    """Test that quantizer can be instantiated."""
-    quantizer = ActivationAwareQuantizer()
-    assert quantizer.default_bitwidth == 8
-    assert quantizer.magnitude_thresholds is not None
+def test_rtn_levels_and_error():
+    torch.manual_seed(0)
+    w = torch.randn(64, 256)
+    for bits in (2, 3, 4):
+        wq = rtn(w, bits)
+        # each group of 128 uses at most 2**bits distinct values
+        assert max(len(torch.unique(g)) for g in wq.reshape(-1, 128)) <= 2 ** bits
+    e3 = (w - rtn(w, 3)).pow(2).mean()
+    e4 = (w - rtn(w, 4)).pow(2).mean()
+    assert e4 < e3 / 3
 
 
-def test_quantize_function():
-    """Test simulated quantization produces expected output."""
-    quantizer = ActivationAwareQuantizer()
-    
-    # Test with simple tensor
-    tensor = torch.tensor([0.0, 0.5, 1.0, 2.0, -1.0])
-    quantized = quantizer.quantize(tensor, bitwidth=4)
-    
-    # Should have same shape
-    assert quantized.shape == tensor.shape
-    
-    # Values should be close to original (quantization error within tolerance)
-    assert torch.allclose(quantized, tensor, atol=0.15)
+def test_rtn_exact_on_grid():
+    w = torch.arange(128, dtype=torch.float32).repeat(4, 1) % 16
+    assert torch.allclose(rtn(w, 4), w, atol=1e-5)
 
 
-def test_calibration_and_bitwidth_assignment():
-    """Test full calibration flow."""
-    # Create a simple model
-    model = nn.Sequential(
-        nn.Linear(10, 20),
-        nn.ReLU(),
-        nn.Linear(20, 5)
-    )
-    
-    quantizer = ActivationAwareQuantizer()
-    
-    # Create calibration data
-    calibration_data = [torch.randn(32, 10) for _ in range(3)]
-    
-    # Run calibration
-    magnitudes = quantizer.calibrate(model, calibration_data)
-    
-    # Should have some activation magnitudes captured
-    assert len(magnitudes) > 0
-    
-    # Assign bit-widths based on magnitudes
-    bitwidths = quantizer.assign_bitwidths(magnitudes)
-    
-    # Should have assigned bit-widths
-    assert len(bitwidths) > 0
+def test_aware_never_worse_than_rtn_on_proxy():
+    torch.manual_seed(1)
+    w = torch.randn(32, 256)
+    act = torch.rand(256) ** 4 * 100  # a few channels with large activations
+    wq, alpha = aware(w, 3, act)
+    assert weighted_err(w, wq, act) <= weighted_err(w, rtn(w, 3), act) + 1e-6
+    assert 0.0 <= alpha <= 1.0
 
 
-def test_quantization_pipeline():
-    """Test end-to-end quantization pipeline."""
-    # Create a simple model
-    model = nn.Sequential(
-        nn.Linear(100, 50),
-        nn.Linear(50, 10)
-    )
-    
-    quantizer = ActivationAwareQuantizer()
-    
-    # Calibration
-    calibration_data = [torch.randn(64, 100) for _ in range(5)]
-    magnitudes = quantizer.calibrate(model, calibration_data)
-    
-    # Assign bit-widths
-    bitwidths = quantizer.assign_bitwidths(magnitudes)
-    
-    # Quantize some weights
-    for name, param in model.named_parameters():
-        if 'weight' in name:
-            bitwidth = quantizer.get_bitwidth_for_layer(name)
-            quantized_weight = quantizer.quantize(param, bitwidth)
-            
-            # Should have same shape
-            assert quantized_weight.shape == param.shape
-
-
-def test_default_bitwidth():
-    """Test that default bit-width is used for unassigned layers."""
-    quantizer = ActivationAwareQuantizer()
-    
-    bitwidth = quantizer.get_bitwidth_for_layer("unknown_layer")
-    assert bitwidth == 8
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+def test_aware_helps_with_outlier_channels():
+    torch.manual_seed(2)
+    w = torch.randn(32, 256)
+    act = torch.ones(256)
+    act[:8] = 1e4
+    wq, alpha = aware(w, 3, act)
+    assert alpha > 0
+    assert weighted_err(w, wq, act) < 0.8 * weighted_err(w, rtn(w, 3), act)
